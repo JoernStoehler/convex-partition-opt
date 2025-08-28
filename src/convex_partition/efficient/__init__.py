@@ -1,0 +1,1 @@
+"""JAX-optimized implementations for convex partition optimization."""

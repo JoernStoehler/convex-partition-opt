@@ -38,6 +38,14 @@ tests/artifacts/*
 site/
 dist/
 build/
+*.log
+
+# MkDocs
+site/
+
+# UV
+.uv/
+uv.lock
 
 # Ruff cache
 .ruff_cache/

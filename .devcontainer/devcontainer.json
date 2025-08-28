@@ -1,0 +1,36 @@
+{
+  "name": "Convex Partition Optimization",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "features": {
+    "ghcr.io/devcontainers-contrib/features/mkdocs:2": {}
+  },
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/workspaces/convex-partition-opt/.venv/bin/python",
+        "python.terminal.activateEnvironment": true,
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true,
+        "editor.rulers": [100],
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        }
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "ms-toolsai.jupyter",
+        "mechatroner.rainbow-csv",
+        "PKief.material-icon-theme",
+        "github.copilot",
+        "ms-python.debugpy",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  },
+  "forwardPorts": [8000],
+  "remoteUser": "vscode"
+}

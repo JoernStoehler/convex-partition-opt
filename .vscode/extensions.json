@@ -1,0 +1,13 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff",
+    "ms-toolsai.jupyter",
+    "mechatroner.rainbow-csv",
+    "PKief.material-icon-theme",
+    "github.copilot",
+    "ms-python.debugpy",
+    "tamasfe.even-better-toml"
+  ]
+}

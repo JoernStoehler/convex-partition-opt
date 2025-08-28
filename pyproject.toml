@@ -20,6 +20,7 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1.370",
     "ipykernel>=6.29",    # For notebooks
+    "pre-commit>=3.0",
 ]
 docs = [
     "mkdocs>=1.6",
