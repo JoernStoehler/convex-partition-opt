@@ -1,0 +1,834 @@
+# Development Roadmap: Convex Partition Optimization
+
+## Executive Summary
+
+We are computationally searching for optimal convex partitions of the unit square that minimize the maximum aspect ratio (circumradius/inradius) across all polygons in the partition. The 2003 CCCG paper established bounds of [1.28868, 1.29950], achieving the upper bound with a hand-crafted 92-piece partition. We aim to:
+
+1. **Verify** the paper's constructions computationally
+2. **Improve** upon their bounds using gradient-based optimization  
+3. **Discover** patterns that might lead to analytical proofs
+4. **Explore** whether the optimal partition requires infinite pieces (as conjectured)
+5. **Learn** intelligent vertex placement via ML/RL approaches
+6. **Extract** provable constructions from learned policies
+
+The project progresses through three phases:
+- **Classical optimization** (Weeks 1-11): Reproduce paper, implement GD, analyze patterns
+- **Machine learning** (Weeks 12-18): Learn value functions and placement policies
+- **Production scaling** (Weeks 19-20): GPU acceleration for massive explorations
+
+## Mathematical Background
+
+### Core Definitions
+- **Aspect Ratio γ**: For a polygon P, γ(P) = circumradius(P) / inradius(P)
+- **Partition Score**: For a partition Π = {P₁, P₂, ...}, score(Π) = max{γ(Pᵢ)}
+- **Goal**: Find partition Π* such that score(Π*) is minimized
+
+### Key Insight from Paper
+- Square's one-piece ratio: γ = √2 ≈ 1.41421
+- Trivial lower bound: γ₉₀° = (1 + 1/√2) ≈ 1.20711
+- Paper's bounds: γ* ∈ [1.28868, 1.29950]
+- Best known partition: 92 pieces with γ = 1.29950
+
+## Design Philosophy
+
+### Why These Choices
+
+**Three-Implementation Strategy**:
+1. **Reference**: Trusted, validated, clear - our source of truth
+2. **Efficient**: JAX-optimized for gradient descent
+3. **Graphless**: Optimize vertex positions without fixed topology
+
+**Why JAX over NumPy/PyTorch**:
+- `vmap` for batching over polygons
+- `grad` for automatic differentiation
+- Functional paradigm prevents bugs
+- JIT compilation for production speed
+
+**Why Not Use These Alternatives**:
+- ❌ **Constraint solvers** (Gurobi, CVXPY): Aspect ratio is non-convex
+- ❌ **Discrete search**: Continuous optimization finds better solutions
+- ❌ **Mesh generators**: We need control over vertex positions
+- ❌ **Symbolic math**: Problem is fundamentally numerical
+
+### Critical Lemmas
+
+**Lemma 1 (Degeneracy Gap)**: Nearly degenerate polygons (almost collinear vertices or coincident points) are never optimal. There exists ε > 0 such that any partition with a polygon of area < ε can be improved by removing that polygon.
+
+**Lemma 2 (Local Structure)**: For generic positions, the aspect ratio is determined by:
+- 3 vertices defining the circumcircle
+- 3 edges (4-6 vertices) defining the incircle
+- All other vertices have zero gradient
+
+**Lemma 3 (Boundary Constraints)**: Optimal partitions likely have:
+- Vertices at all 4 corners (fixed)
+- Vertices along edges (1D constrained)
+- Interior vertices (2D free)
+
+**Lemma 4 (Symmetry Non-Enforcement)**: While the square has 4-fold rotational symmetry, we do NOT enforce this in optimization because:
+- Broken symmetry solutions might achieve better scores
+- Natural emergence of symmetry is itself interesting
+- Asymmetric patterns could reveal new construction principles
+
+## Data Structures
+
+### Vertex Representation
+```python
+# For REFERENCE implementation (NumPy)
+@dataclass
+class Vertices:
+  """Fixed-size vertex array with position types."""
+  corners: NDArray[np.float64]      # Shape (4, 2), fixed at unit square corners
+  edge_points: NDArray[np.float64]  # Shape (E, 2), constrained to boundary
+  interior_points: NDArray[np.float64]  # Shape (I, 2), free to move
+  
+  def to_array(self) -> NDArray[np.float64]:
+    """Concatenate all vertices in consistent order."""
+    return np.concatenate([self.corners, self.edge_points, self.interior_points])
+  
+  @property
+  def num_vertices(self) -> int:
+    return 4 + self.edge_points.shape[0] + self.interior_points.shape[0]
+
+# For EFFICIENT implementation (JAX)  
+@dataclass
+class VerticesJAX:
+  """JAX version with fixed shapes for compilation."""
+  corners: Float[Array, "4 2"]      # Always 4 corners
+  edge_points: Float[Array, "E 2"]  # E determined at compile time
+  interior_points: Float[Array, "I 2"]  # I determined at compile time
+  valid_mask: Bool[Array, "N"]      # Which vertices are active (not merged)
+```
+
+### Partition Graph
+```python
+@dataclass
+class ConvexPartition:
+  """Graph structure defining how vertices form polygons."""
+  vertices: Vertices
+  polygons: list[list[int]]  # Each polygon is a list of vertex indices (CCW)
+  
+  def validate(self) -> bool:
+    """Check: convexity, non-overlap, complete coverage, CCW orientation."""
+    # 1. All polygons convex (cross product test)
+    # 2. No two polygons overlap except at boundaries
+    # 3. Union covers [0,1]² (use grid sampling)
+    # 4. All vertex lists counterclockwise
+    # 5. No degenerate (area ~0) polygons
+    return True  # Detailed implementation in reference/
+
+@dataclass
+class ConvexPartitionJAX:
+  """JAX-compatible version using padding for ragged arrays."""
+  vertex_positions: Float[Array, "N 2"]
+  polygon_indices: Float[Array, "P M"]  # P polygons, M max vertices, -1 for padding
+  polygon_sizes: Int[Array, "P"]  # Actual number of vertices per polygon
+```
+
+### Scoring Components
+```python
+@dataclass
+class PolygonScores:
+  """Detailed scoring information for analysis."""
+  aspect_ratios: Float[Array, "P"]     # γ for each polygon
+  circumradii: Float[Array, "P"]       
+  inradii: Float[Array, "P"]          
+  areas: Float[Array, "P"]            
+  max_polygon_idx: int                # Which polygon determines score
+  circumcircle_vertices: list[int]    # 3 vertices on circumcircle
+  incircle_edges: list[tuple[int, int]]  # Edges touching incircle
+```
+
+## Milestone Structure
+
+### Milestone 0: Infrastructure Validation ✓
+**Already completed via spec.md**
+- Repository setup with all tools
+- JAX hello world working
+- Testing infrastructure ready
+
+### Milestone 1: Reference Implementation [Week 1-2]
+
+**Goal**: Trusted, validated geometry and scoring functions
+
+**Deliverables**:
+```python
+# src/convex_partition/reference/geometry.py
+def point_in_polygon(point: NDArray, polygon: NDArray) -> bool
+def polygon_area(vertices: NDArray) -> float
+def is_convex(vertices: NDArray) -> bool
+def is_counterclockwise(vertices: NDArray) -> bool
+def circumcircle(vertices: NDArray) -> tuple[NDArray, float]  # center, radius
+def incircle_convex_polygon(vertices: NDArray) -> tuple[NDArray, float]
+def aspect_ratio(vertices: NDArray) -> float
+
+# src/convex_partition/reference/partition.py  
+def validate_partition(partition: ConvexPartition) -> bool
+def validate_coverage(partition: ConvexPartition, n_samples: int = 1000) -> bool
+def score_partition(partition: ConvexPartition) -> PolygonScores
+def render_svg(partition: ConvexPartition, filename: str) -> None
+def partition_to_csv(partition: ConvexPartition, filename: str) -> None
+def load_paper_partitions() -> dict[str, ConvexPartition]  # 12, 21, 37, 92-piece
+```
+
+**Tests Required**:
+1. **Unit tests** for each geometry function with known examples
+2. **Edge cases**: degenerate polygons, numerical precision
+3. **Paper verification**: All 5 regular polygons from Table 1
+4. **Coverage validation**: Ensure partitions fully cover square
+5. **Hypothesis tests**: Properties like area(polygon) ≤ area(square)
+
+**Success Criteria**:
+- [ ] All functions have docstrings with math formulas in LaTeX
+- [ ] Test coverage > 95%
+- [ ] Triangle γ₁ = 2.00000 ± 0.00001
+- [ ] Square γ₁ = 1.41421 ± 0.00001  
+- [ ] Pentagon γ₁ = 1.23607 ± 0.00001
+- [ ] SVG output matches paper's figures visually
+- [ ] CSV contains scores matching paper ±0.0001
+
+**Test Artifacts to Inspect**:
+- `tests/artifacts/paper_fig3_12piece.svg` - Corner pentagons visible
+- `tests/artifacts/paper_fig4a_21piece.svg` - Central octagon visible
+- `tests/artifacts/paper_fig5_92piece.svg` - Hexagons on edges
+- `tests/artifacts/scores_comparison.csv` - Columns: [figure, n_pieces, paper_score, our_score, difference]
+
+### Milestone 2: Efficient JAX Implementation [Week 3]
+
+**Goal**: Differentiable, vmappable scoring functions
+
+**Deliverables**:
+```python
+# src/convex_partition/efficient/geometry.py
+def batch_aspect_ratios(vertices: Float[Array, "P V 2"]) -> Float[Array, "P"]
+def batch_circumradii(vertices: Float[Array, "P V 2"]) -> Float[Array, "P"]  
+def batch_inradii(vertices: Float[Array, "P V 2"]) -> Float[Array, "P"]
+
+# src/convex_partition/efficient/scoring.py
+def score_partition_jax(
+  vertex_positions: Float[Array, "N 2"],
+  polygon_indices: Int[Array, "P M"],  # Padded with -1
+  polygon_sizes: Int[Array, "P"]       # Actual sizes
+) -> Float[Array, ""]:  # Scalar score
+  """Handle ragged arrays via padding and masking."""
+
+def score_gradient(
+  vertex_positions: Float[Array, "N 2"],
+  polygon_indices: Int[Array, "P M"],
+  polygon_sizes: Int[Array, "P"]
+) -> Float[Array, "N 2"]:  # Gradient w.r.t. vertex positions
+```
+
+**GPU Considerations** (for future scaling):
+- Use `jax.device_put` for explicit device placement
+- Prefer `vmap` over Python loops even for enumeration
+- Batch small polygons together for GPU efficiency
+- Consider `jax.pmap` for multi-GPU eventually
+
+**Handling Ragged Arrays in JAX**:
+```python
+# Strategy 1: Padding with masking
+def process_ragged_polygons(polygons, max_vertices=10):
+  padded = np.full((len(polygons), max_vertices), -1, dtype=np.int32)
+  sizes = np.zeros(len(polygons), dtype=np.int32)
+  for i, poly in enumerate(polygons):
+    sizes[i] = len(poly)
+    padded[i, :len(poly)] = poly
+  return padded, sizes
+
+# Strategy 2: Segment-based representation  
+def segment_representation(polygons):
+  flat_indices = np.concatenate(polygons)
+  segment_ids = np.repeat(np.arange(len(polygons)), 
+                          [len(p) for p in polygons])
+  return flat_indices, segment_ids
+
+# Strategy 3: Fixed-size approximation (triangles + quads + pentagons)
+def fixed_size_bins(polygons):
+  triangles = [p for p in polygons if len(p) == 3]
+  quads = [p for p in polygons if len(p) == 4]
+  # ... separate handling for each size
+```
+
+**Key Challenges**:
+- Handle ragged arrays (polygons have 3-12+ vertices)
+- Maintain differentiability through max operation
+- Numerical stability near degeneracies
+- Efficient batching despite variable sizes
+
+**Tests Required**:
+1. **Consistency tests**: Compare with reference implementation
+2. **Gradient tests**: Finite differences vs autodiff
+3. **Performance tests**: Time 1000 random partitions
+4. **Numerical tests**: Behavior near collinear vertices
+5. **Padding tests**: Verify masked values don't affect results
+
+**Success Criteria**:
+- [ ] Results match reference to 1e-6
+- [ ] Gradients correct to 1e-5 (finite difference)
+- [ ] 100x faster than reference for 50+ pieces
+- [ ] No NaN/Inf for non-degenerate inputs
+- [ ] Handles polygons with 3-20 vertices
+
+### Milestone 3: Fixed-Topology Optimization [Week 4]
+
+**Goal**: Given paper's 92-piece topology, optimize vertex positions
+
+**Deliverables**:
+```python
+# src/convex_partition/optimize/fixed_topology.py
+def optimize_fixed_partition(
+  initial_partition: ConvexPartition,
+  learning_rate: float = 1e-3,
+  max_steps: int = 10000,
+  log_interval: int = 100,
+  record_trajectory: bool = True
+) -> tuple[ConvexPartition, OptimizationHistory]:
+  """Gradient descent with fixed graph structure."""
+
+@dataclass
+class OptimizationHistory:
+  """Track optimization progress for analysis."""
+  losses: list[float]
+  gradients: list[float]  # Gradient norms
+  vertex_changes: list[float]  # Max vertex movement per step
+  timestamps: list[float]
+  best_partition: ConvexPartition
+  trajectories: Optional[NDArray]  # Shape (steps, N, 2) vertex positions over time
+  
+def analyze_trajectories(history: OptimizationHistory) -> dict:
+  """Extract patterns from optimization trajectories."""
+  # - Which vertices move most?
+  # - Correlation between vertex movements
+  # - Critical points where score jumps
+  # - Degenerate polygon appearances/disappearances
+  return {
+    "vertex_mobility": ...,  # Which vertices are most active
+    "degeneracy_events": ...,  # When/where polygons become degenerate
+    "phase_transitions": ...,  # Sudden score improvements
+  }
+  
+def project_to_constraints(vertices: Vertices) -> Vertices:
+  """Keep edge vertices on edges, interior in square."""
+  
+def detect_convergence(history: OptimizationHistory, window: int = 100) -> bool:
+  """Check if optimization has converged."""
+```
+
+**Paper Partition Coordinates**:
+```python
+# src/convex_partition/data/paper_partitions.py
+PAPER_12_PIECE = {
+  "vertices": np.array([...]),  # Exact coordinates from paper
+  "polygons": [...],
+  "expected_score": 1.33964,
+  "tolerance": 0.0001  # Account for rounding
+}
+PAPER_21_PIECE = {...}  # θ = 82.16°
+PAPER_37_PIECE = {...}  # θ = 81.41°  
+PAPER_92_PIECE = {...}  # Most complex
+```
+
+**Logging Infrastructure**:
+```python
+# src/convex_partition/utils/logging.py
+import logging
+from pathlib import Path
+
+def setup_logging(level=logging.INFO, log_file="optimization.log"):
+  logger = logging.getLogger("convex_partition")
+  logger.setLevel(level)
+  
+  # Console handler with color
+  console = logging.StreamHandler()
+  console.setFormatter(ColorFormatter())
+  
+  # File handler with details
+  file_handler = logging.FileHandler(log_file)
+  file_handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  ))
+  
+  logger.addHandler(console)
+  logger.addHandler(file_handler)
+  return logger
+```
+
+**Experiments**:
+1. Start from paper's 92-piece partition
+2. Add Gaussian noise (σ=0.01) to vertices
+3. Optimize to recover (or beat!) original
+4. Try different learning rates: [1e-4, 1e-3, 1e-2]
+5. Compare optimizers: SGD vs Adam vs LBFGS
+
+**Success Criteria**:
+- [ ] Recover paper's score from noisy initialization
+- [ ] Find improvement > 0.0001 from paper's best (stretch goal)
+- [ ] Optimization converges in < 5000 steps
+- [ ] SVG animation of optimization process
+
+**Test Artifacts**:
+- `results/optimization_curves.png` - Loss vs iteration
+- `results/improved_92piece.svg` - Best found partition
+- `results/vertex_trajectories.gif` - Animation of optimization
+
+### Milestone 4: Graph Enumeration [Week 5-6]
+
+**Goal**: Efficiently enumerate valid convex partitions
+
+**Deliverables**:
+```python
+# src/convex_partition/enumerate/graphs.py
+def enumerate_partitions_exhaustive(
+  vertices: Vertices,
+  max_partitions: int = 1000,
+  prune_threshold: float = float('inf')
+) -> list[list[list[int]]]:  # List of polygon index lists
+  """Exhaustive search with aggressive pruning."""
+
+def partial_score_lower_bound(
+  partial_partition: list[list[int]],
+  vertices: Vertices
+) -> float:
+  """For pruning search tree - must be admissible (never overestimate)."""
+
+def is_valid_partial(
+  partial_partition: list[list[int]],
+  vertices: Vertices  
+) -> bool:
+  """Check convexity and non-overlap so far."""
+  
+def enumerate_from_edges(
+  vertices: Vertices,
+  starting_edges: list[tuple[int, int]]
+) -> Generator[list[list[int]], None, None]:
+  """Build partition by extending from edges."""
+```
+
+**Enumeration Strategy** (Exhaustive with Pruning):
+```python
+# Core approach - no Delaunay heuristics
+def enumerate_all():
+  # Start with empty partition
+  queue = [PartialPartition(polygons=[], uncovered=unit_square)]
+  
+  while queue:
+    partial = queue.pop()
+    
+    # Prune if partial score already exceeds best complete
+    if partial_score_lower_bound(partial) > best_complete_score:
+      continue
+      
+    # Try all ways to add next polygon
+    for next_polygon in generate_valid_polygons(partial.uncovered):
+      if is_convex(next_polygon) and no_overlap(next_polygon, partial):
+        new_partial = partial.add(next_polygon)
+        queue.append(new_partial)
+    
+    if partial.is_complete():
+      yield partial
+```
+
+**Pruning Strategies**:
+1. **Score bound**: Partial score > best complete → prune
+2. **Geometric impossibility**: Can't cover remainder convexly → prune  
+3. **Dominated partials**: If partition A strictly better than B → prune B
+4. **Vertex budget**: Too many vertices used → prune
+
+**Success Criteria**:
+- [ ] Find all valid partitions for 5-vertex square in < 1 second
+- [ ] Enumerate 1000+ partitions for 20-vertex square
+- [ ] Pruning eliminates > 90% of search space
+- [ ] Reproduce paper's topologies as special cases
+- [ ] No heuristics - pure exhaustive search
+
+### Milestone 5: Graphless Optimization [Week 7-8]
+
+**Goal**: Jointly optimize vertex positions and graph structure
+
+**Deliverables**:
+```python
+# src/convex_partition/optimize/graphless.py
+def optimize_graphless(
+  initial_vertices: Vertices,
+  steps: int = 10000,
+  graph_update_interval: int = 100
+) -> tuple[ConvexPartition, list[float]]:
+  """Alternating optimization of positions and topology."""
+  
+  for step in range(steps):
+    if step % graph_update_interval == 0:
+      # Find best graph for current vertices
+      graphs = enumerate_partitions(vertices, max_partitions=100)
+      scores = [score_partition_jax(vertices, g) for g in graphs]
+      best_graph = graphs[argmin(scores)]
+    
+    # Gradient step on vertex positions
+    grad = score_gradient(vertices, best_graph)
+    vertices = vertices - learning_rate * grad
+    vertices = project_to_constraints(vertices)
+```
+
+**Key Insights**:
+- Graph changes discretely when polygons become non-convex
+- Step size must be small enough to not skip good graphs
+- Can warm-start graph search from previous iteration
+
+**Success Criteria**:
+- [ ] Improve upon fixed-topology optimization
+- [ ] Discover novel patterns not in paper
+- [ ] Handle graph transitions smoothly
+- [ ] Generate interpretable pattern statistics
+
+### Milestone 6: Pattern Analysis & Scaling [Week 9-10]
+
+**Goal**: Extract construction principles from optimized partitions
+
+**Deliverables**:
+```python
+# src/convex_partition/analyze/patterns.py
+def extract_statistics(partitions: list[ConvexPartition]) -> pd.DataFrame:
+  """Statistics: polygon size distribution, symmetries, radial patterns."""
+  
+def detect_symmetry(partition: ConvexPartition) -> dict[str, float]:
+  """Detect and score 4-fold, 2-fold, or no symmetry."""
+  
+def fit_scaling_law(
+  results: dict[int, float]  # {n_vertices: best_score}
+) -> tuple[float, float, float]:  # a, b, c for: score(n) = a + b/n^c
+  
+def generate_construction_hypothesis(
+  partitions_by_n: dict[int, ConvexPartition]
+) -> str:
+  """Hypothesize general construction rule as n → ∞."""
+```
+
+**Analysis Products**:
+1. **Scaling plot**: Score vs number of vertices with fitted curve
+2. **Pattern emergence**: When do hexagons appear on edges?
+3. **Symmetry evolution**: Does 4-fold symmetry persist?
+4. **Limiting behavior**: Extrapolate to n → ∞
+5. **Comparison table**: Our best vs paper's best
+
+**Success Criteria**:
+- [ ] Clear scaling relationship (e.g., γ* ~ 1.29 - c/n)
+- [ ] Identify vertex placement rules
+- [ ] Predict score for unseen vertex counts ±0.001
+- [ ] Generate publication-quality figures
+- [ ] LaTeX table comparing all results
+
+**Final Artifacts**:
+- `results/scaling_analysis.png` - Score vs n with fitted curve
+- `results/pattern_grid.svg` - Best partitions for n=10,20,30,40,50
+- `results/construction_rules.tex` - Hypothesized analytical form
+- `results/comparison_table.tex` - Paper vs our results
+- `results/best_partitions/` - Directory with all optimal SVGs
+
+## Final Validation & Documentation [Week 11]
+
+**Goal**: Ensure reproducibility and prepare findings
+
+**Checklist**:
+- [ ] All paper results reproduced within 0.0001
+- [ ] README includes full reproduction instructions
+- [ ] Jupyter notebook demonstrates key findings
+- [ ] All tests passing with >95% coverage
+- [ ] Documentation deployed to GitHub Pages
+- [ ] Best partitions better than paper (stretch goal)
+
+**Deliverables**:
+- `notebooks/paper_reproduction.ipynb` - Step-by-step paper verification
+- `notebooks/new_results.ipynb` - Our improvements with visualizations
+- `docs/findings.md` - Summary of new discoveries
+- `results/final_report.pdf` - Complete technical report
+
+---
+
+## Advanced Milestones (Weeks 12+)
+
+### Milestone 7: Value Function Learning [Weeks 12-14]
+
+**Goal**: Learn to predict optimized scores from rough vertex placements
+
+**Motivation**: Full optimization takes minutes for large partitions. A learned value function could:
+- Prune graph enumeration by predicting final scores
+- Guide initial vertex placement
+- Enable real-time exploration of partition space
+
+**Deliverables**:
+```python
+# src/convex_partition/ml/value_function.py
+def train_value_network(
+  dataset: list[tuple[ConvexPartition, float]],  # (initial, final_score) pairs
+  model_config: dict
+) -> ValueNetwork:
+  """Train network to predict post-optimization scores."""
+
+class ValueNetwork(nn.Module):
+  """Predict final score from initial vertex positions."""
+  def __call__(self, vertices: Float[Array, "N 2"]) -> Float[Array, ""]:
+    # Options:
+    # 1. GNN with polygon-level pooling
+    # 2. Transformer with vertex tokens
+    # 3. CNN on rasterized partition
+    pass
+
+def generate_training_data(
+  n_samples: int = 10000,
+  vertex_range: tuple[int, int] = (10, 100)
+) -> list[tuple[ConvexPartition, float]]:
+  """Create dataset by random initialization + optimization."""
+```
+
+**Architecture Considerations**:
+- Input: Variable number of vertices (need padding or set networks)
+- Invariances: Rotation? Translation? (square corners fixed)
+- Output: Single scalar (final optimized score)
+
+**Success Criteria**:
+- [ ] Predict final score within 0.01 for 90% of test cases
+- [ ] 1000x faster than full optimization
+- [ ] Generalize to unseen vertex counts
+
+### Milestone 8: RL-Based Vertex Placement [Weeks 15-18] 
+*⚠️ Architecture and training details still being refined*
+
+**Goal**: Learn policy for intelligent vertex placement pre-optimization
+
+**Concept**: Instead of random initialization → optimize, learn where to place vertices such that post-GD they achieve better scores. The RL agent doesn't place final vertices but rather "seeds" that gradient descent will refine.
+
+**Proposed Architecture**:
+```python
+# src/convex_partition/ml/placement_policy.py
+class VertexTransformer(nn.Module):
+  """Transform vertex set to improved configuration."""
+  
+  def __call__(
+    self,
+    vertices: Float[Array, "N 2"],
+    vertex_mask: Bool[Array, "N"],  # Which vertices are active
+    action_mask: Bool[Array, "3"]   # [allow_move, allow_add, allow_remove]
+  ) -> tuple[Float[Array, "N_out 2"], Float[Array, ""]]:
+    """
+    Returns:
+      - Modified vertex positions (with placeholders for add/remove)
+      - Predicted final score (Q-value)
+    """
+    # Transformer with:
+    # - Position encoding for vertices
+    # - Attention over all vertex pairs
+    # - Special tokens for add/remove operations
+    pass
+
+def train_rl_policy(
+  env: PartitionEnvironment,
+  config: RLConfig
+) -> VertexTransformer:
+  """Train using PPO/SAC/DQN variant for continuous action space."""
+  # Options under consideration:
+  # 1. Q-learning with discretized moves
+  # 2. Actor-critic with continuous actions
+  # 3. Model-based RL using learned dynamics
+  pass
+```
+
+**Environment Design**:
+```python
+class PartitionEnvironment:
+  """RL environment for vertex manipulation."""
+  
+  def step(self, action: Action) -> tuple[State, float, bool]:
+    # 1. Apply action (move/add/remove vertices)
+    # 2. Run gradient descent to convergence
+    # 3. Return new state, reward (negative score), done flag
+    pass
+  
+  def reset(self) -> State:
+    # Random or heuristic initialization
+    pass
+```
+
+**Training Strategy** *(tentative)*:
+- Start with small vertex counts (N=10-20)
+- Curriculum learning: gradually increase complexity
+- Reward shaping: Intermediate rewards for convexity preservation
+- Experience replay with prioritized sampling
+
+**Success Criteria**:
+- [ ] Consistently beat random initialization baseline
+- [ ] Discover non-obvious vertex placement patterns
+- [ ] Generalize to larger N than trained on
+- [ ] Real-time vertex suggestion (<100ms)
+
+### Milestone 9: GPU Scaling & Production [Weeks 19-20]
+
+**Goal**: Scale to massive partitions using GPU acceleration
+
+**Deliverables**:
+```python
+# src/convex_partition/gpu/scaled_optimize.py
+def optimize_gpu_batch(
+  partitions: list[ConvexPartition],
+  device: str = "gpu"
+) -> list[ConvexPartition]:
+  """Parallel optimization of multiple partitions."""
+  
+def enumerate_gpu(
+  vertices: VerticesJAX,
+  max_partitions: int = 100000
+) -> Array:
+  """GPU-accelerated graph enumeration."""
+```
+
+**Targets**:
+- [ ] Handle N=1000 vertices
+- [ ] Enumerate 1M partitions/second
+- [ ] Batch optimize 100 partitions simultaneously
+
+---
+
+## Future Research Directions
+
+### Theoretical Extensions
+1. **Prove limiting behavior**: Extract analytical form as n→∞
+2. **Lower bound improvements**: Tighten theoretical minimum
+3. **Other polygons**: Extend to hexagons, irregular shapes
+4. **3D generalization**: Optimal convex partitions of polyhedra
+
+### Algorithmic Improvements  
+1. **Differentiable graph selection**: Soft assignment matrices
+2. **Evolutionary strategies**: CMA-ES for non-differentiable objectives
+3. **Constraint learning**: Discover rules that preserve optimality
+4. **Symmetry-aware networks**: Equivariant architectures
+
+### Applications
+1. **Mesh generation**: Optimal finite element meshes
+2. **Collision detection**: Hierarchical bounding volumes
+3. **Packing problems**: Connection to circle packing
+4. **Art generation**: Aesthetic polygon decompositions
+
+---
+
+## Development Conventions
+
+### Code Style
+- **Docstrings**: Google style with LaTeX math
+- **Type hints**: Use jaxtyping for array shapes
+- **Variable names**: `vertices` not `verts`, `polygon` not `poly`
+- **Assertions**: Use for preconditions in reference implementation
+- **No assertions**: In efficient implementation (JAX can't compile them)
+
+### Testing Philosophy
+- **Reference tests**: Exhaustive edge cases, visual inspection
+- **Efficient tests**: Consistency with reference, performance
+- **Hypothesis tests**: Invariants that should always hold
+- **Regression tests**: Lock in improvements as we find them
+
+### Numerical Considerations
+- **Epsilon for comparisons**: 1e-10 for reference, 1e-6 for efficient
+- **Degenerate threshold**: Area < 1ንd-12 → ignore polygon
+- **Gradient clipping**: Clip to [-10, 10] if gradients explode
+- **Learning rate schedule**: Start at 1e-2, decay by 0.9 every 1000 steps
+
+### Output Conventions
+- **SVG colors**: Use gradient from blue (low γ) to red (high γ)
+- **CSV format**: Always include column for theoretical minimum
+- **Plot style**: Paper-ready with LaTeX labels
+- **Progress bars**: Use tqdm for long-running optimizations
+
+## Success Metrics
+
+### Minimum Viable Success
+- Reproduce paper's 92-piece partition score (1.29950 ± 0.0001)
+- Working gradient descent that improves from random initialization
+- Clean SVG visualizations for inspection
+
+### Expected Success  
+- Improve paper's bound to γ ≤ 1.299
+- Find patterns for n=10,20,...,100 vertices
+- Optimization converges reliably
+
+### Stretch Goals
+- Close the gap: get γ < 1.295
+- Prove pattern continues to n → ∞
+- Discover fundamentally new construction
+- GPU acceleration for n > 1000 vertices
+
+## Common Pitfalls to Avoid
+
+1. **Numerical Degeneracies**: Always check for near-zero areas before division
+2. **Graph Validity**: Partition might become invalid during optimization - detect and fix
+3. **Local Minima**: Random restarts or simulated annealing might be needed
+4. **Memory Explosion**: Graph enumeration is exponential - use pruning aggressively
+5. **Gradient Masking**: Max operation can hide gradients - use softmax approximation if needed
+
+## Testing & Continuous Integration
+
+### Test Organization
+```
+tests/
+├── conftest.py                    # Shared fixtures
+├── test_reference_geometry.py     # Geometry primitives
+├── test_reference_partition.py    # Partition operations  
+├── test_paper_verification.py     # Reproduce paper results
+├── test_efficient_consistency.py  # Reference vs efficient
+├── test_optimization.py          # Convergence tests
+├── test_hypothesis.py            # Property-based tests
+└── artifacts/                    # Generated during tests
+    ├── .gitkeep
+    └── [generated SVGs, CSVs]
+```
+
+### Key Test Fixtures
+```python
+# tests/conftest.py
+@pytest.fixture
+def unit_square():
+  """Standard unit square vertices."""
+  return np.array([[0, 0], [1, 0], [1, 1], [0, 1]])
+
+@pytest.fixture  
+def paper_partitions():
+  """Load paper's 12, 21, 37, 92-piece partitions."""
+  return load_paper_partitions()
+
+@pytest.fixture(scope="session")
+def optimization_tolerances():
+  """Standard tolerances for different contexts."""
+  return {
+    "reference": {"rtol": 1e-9, "atol": 1e-12},
+    "efficient": {"rtol": 1e-6, "atol": 1e-8},
+    "gradient": {"rtol": 1e-5, "atol": 1e-7}
+  }
+```
+
+### Continuous Integration Checks
+Every push/PR must pass:
+1. **Linting**: `ruff check` with no errors
+2. **Formatting**: `ruff format --check` unchanged
+3. **Type checking**: `pyright` with strict mode
+4. **Tests**: All pytest tests passing
+5. **Coverage**: Maintained >90% coverage
+6. **Performance**: Key operations within time limits
+7. **Artifacts**: Generated SVGs are valid
+
+## Questions for Developer
+
+Before starting, please confirm you understand:
+1. The mathematical goal (minimize max aspect ratio)
+2. The three-implementation progression (reference → efficient → graphless)
+3. How to validate results against the paper
+4. The testing philosophy (visual + numerical + theoretical)
+5. Why we track trajectories (better optimizers, pattern discovery)
+6. Why we don't enforce symmetry (might be suboptimal)
+
+If any aspect is unclear, refer to the paper (included in repo) or the detailed function docstrings. The reference implementation should always be the source of truth for correctness.
+
+## Summary of Complete Vision
+
+**Phase 1 (Classical)**: Reproduce paper, optimize with gradients, discover patterns through exhaustive search with pruning. Extract scaling laws and construction principles.
+
+**Phase 2 (Learning)**: Train value networks to predict outcomes without full optimization. Develop RL policies that learn intelligent vertex placement strategies that lead to better post-GD results.
+
+**Phase 3 (Production)**: Scale to massive partitions (N=1000+) using GPU acceleration. Extract provable mathematical constructions from learned neural policies.
+
+The ultimate goal is not just to beat the paper's bounds empirically, but to discover fundamentally new partition strategies that can be proven optimal as n→∞, potentially solving the conjecture about whether the square's optimal partition requires infinite pieces.
