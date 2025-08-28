@@ -1,1 +1,1 @@
-"""Reference implementations for convex partition optimization."""
+"""Reference implementations using NumPy."""

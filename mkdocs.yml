@@ -1,0 +1,19 @@
+site_name: Convex Partition Optimization
+site_description: Optimal convex partitions of regular polygons
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - admonition
