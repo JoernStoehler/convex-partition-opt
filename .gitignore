@@ -49,3 +49,11 @@ uv.lock
 
 # Ruff cache
 .ruff_cache/
+
+# C build artifacts
+*.o
+*.so
+src/c_extensions/*.o
+src/c_extensions/*.so
+src/c_extensions/test_convex_partition
+src/c_extensions/libconvex_partition.so
