@@ -1,9 +1,5 @@
 {
   "name": "Convex Partition Optimization",
-  "image": "mcr.microsoft.com/devcontainers/python:3.11",
-  "features": {
-    "ghcr.io/devcontainers-contrib/features/mkdocs:2": {}
-  },
   "postCreateCommand": ".devcontainer/post-create.sh",
   "customizations": {
     "vscode": {
